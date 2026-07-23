@@ -1,0 +1,6 @@
+venv/
+app/result.png
+__pycache__/
+*.pyc
+.playwright/
+.env
