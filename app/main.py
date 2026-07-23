@@ -273,16 +273,6 @@ async def main():
 
         page = await browser.new_page()
 
-        # log requests for debugging
-        # page.on(
-        #     "request",
-        #     lambda req:
-        #     print(
-        #         "REQ:",
-        #         req.method,
-        #         req.url
-        #     )
-        # )
 
         await page.goto(
             "https://camping.bcparks.ca/",
