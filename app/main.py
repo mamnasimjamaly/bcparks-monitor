@@ -1,6 +1,7 @@
 import asyncio
 from playwright.async_api import async_playwright
 from datetime import datetime
+from telegram_alert import notify
 
 
 PARK_NAME = "Golden Ears"
@@ -261,6 +262,36 @@ async def search(page):
         10000
     )
 
+async def find_available_areas(page):
+
+    available = page.locator(
+        '.leaflet-marker-icon svg[data-availability="icon-available"]'
+    )
+
+    count = await available.count()
+
+    if count == 0:
+        print("No available areas.")
+        return
+
+    print("Available areas:")
+
+    areas = []
+
+    for i in range(count):
+        area = await available.nth(i).get_attribute("id")
+
+        if area:
+            areas.append(area)
+            print(f"🟢 {area}")
+
+    message = (
+        "🏕️ BC Parks Availability Found!\n\n"
+        + "\n".join([f"🟢 {area}" for area in areas])
+    )
+
+    await notify(message)
+
 
 async def main():
 
@@ -293,19 +324,7 @@ async def main():
 
         await search(page)
 
-
-        print(
-            "\nRESULT PAGE TEXT\n"
-        )
-
-        text = await page.locator(
-            "body"
-        ).inner_text()
-
-        print(
-            text[:5000]
-        )
-
+        await find_available_areas(page)
 
         await page.screenshot(
             path="result.png",
