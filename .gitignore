@@ -1,6 +1,10 @@
 venv/
 app/result.png
+app/result-*.png
+result.png
+result-*.png
 __pycache__/
 *.pyc
 .playwright/
 .env
+logs/
