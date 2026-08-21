@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -8,6 +9,10 @@ from dotenv import load_dotenv
 from playwright.async_api import Page, async_playwright
 
 from telegram_alert import notify
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
@@ -87,24 +92,134 @@ PARKS = _parse_list(_env("PARKS")) or DEFAULT_PARKS
 DATE_RANGES = _parse_date_ranges(_env("DATE_RANGES")) or [next_weekend()]
 EQUIPMENT = _env("EQUIPMENT") or DEFAULT_EQUIPMENT
 HEADLESS = _env("HEADLESS").lower() in ("1", "true", "yes")
+LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/128.0.0.0 Safari/537.36"
+)
+
+
+async def launch_browser(playwright, headless: bool):
+    launch_kwargs = {
+        "headless": headless,
+        "slow_mo": 0 if headless else 500,
+        "args": ["--disable-blink-features=AutomationControlled"],
+    }
+
+    for channel in ("chrome", "msedge"):
+        try:
+            browser = await playwright.chromium.launch(
+                channel=channel,
+                **launch_kwargs,
+            )
+            print(f"Launched {channel} (headless={headless})")
+            return browser
+        except Exception as exc:
+            print(f"Could not launch {channel}: {exc}")
+
+    print(f"Launched bundled Chromium (headless={headless})")
+    return await playwright.chromium.launch(**launch_kwargs)
+
+
+async def new_page(browser) -> Page:
+    context = await browser.new_context(
+        user_agent=USER_AGENT,
+        viewport={"width": 1400, "height": 900},
+        locale="en-CA",
+        timezone_id="America/Vancouver",
+    )
+    page = await context.new_page()
+    await page.add_init_script(
+        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+    )
+    return page
+
+
+def is_blocked_title(title: str) -> bool:
+    lowered = title.lower()
+    return any(
+        marker in lowered
+        for marker in ("waf", "access denied", "forbidden", "attention required")
+    )
+
+
+async def open_home(page: Page) -> None:
+    await page.goto(HOME_URL, wait_until="domcontentloaded")
+    title = await page.title()
+    print("Page loaded:", title)
+
+    if is_blocked_title(title):
+        LOG_DIR.mkdir(exist_ok=True)
+        await page.screenshot(path=str(LOG_DIR / "waf.png"), full_page=True)
+        raise Exception(
+            f"Blocked by site protection ({title}). "
+            "The search form never loaded."
+        )
+
+    try:
+        await page.locator("#park-autocomplete-input").wait_for(
+            state="visible",
+            timeout=45000,
+        )
+    except Exception:
+        title = await page.title()
+        LOG_DIR.mkdir(exist_ok=True)
+        await page.screenshot(path=str(LOG_DIR / "load-failed.png"), full_page=True)
+        raise Exception(f"Search form did not load (title: {title})")
+
+
+async def ensure_search_form(page: Page) -> bool:
+    """Bring the search form back without a full reload when possible.
+
+    Returns True if the page was fully reloaded and form fields were reset.
+    """
+    park_input = page.locator("#park-autocomplete-input")
+
+    try:
+        if await park_input.is_visible():
+            return False
+    except Exception:
+        pass
+
+    print("Search form not visible; going back")
+    await page.go_back()
+
+    try:
+        await park_input.wait_for(state="visible", timeout=10000)
+        return False
+    except Exception:
+        print("Back did not restore the form; reloading home")
+        await open_home(page)
+        return True
 
 
 async def select_park(page: Page, park_name: str):
     print(f"Selecting park: {park_name}")
+    await page.keyboard.press("Escape")
 
-    await page.click("#park-autocomplete-input")
-    await page.fill("#park-autocomplete-input", park_name)
-    await page.wait_for_timeout(2000)
+    park_input = page.locator("#park-autocomplete-input")
+    await park_input.click(timeout=8000)
 
-    options = page.locator("mat-option")
-    count = await options.count()
+    current = (await park_input.input_value()).strip()
+    if current and current.lower() != park_name.lower():
+        clear = page.locator(
+            "mat-form-field:has(#park-autocomplete-input) button"
+        )
+        if await clear.count() > 0:
+            try:
+                await clear.first.click(timeout=2000)
+            except Exception:
+                await park_input.fill("")
+        else:
+            await park_input.fill("")
 
-    print("Park options:", count)
+    await park_input.fill(park_name)
 
-    if count == 0:
-        raise Exception(f"No park options found for {park_name}")
-
-    await options.first.click()
+    option = page.locator("mat-option").first
+    await option.wait_for(state="visible", timeout=8000)
+    print("Park options:", await page.locator("mat-option").count())
+    await option.click()
 
 
 async def select_month(page: Page, target_date: str):
@@ -239,15 +354,25 @@ async def run_search(
     arrival: str,
     departure: str,
     equipment: str,
+    *,
+    change_park: bool,
+    fresh_home: bool,
 ) -> list[str]:
     print(f"\n=== {park_name} | {arrival} → {departure} | {equipment} ===")
 
-    await page.goto(HOME_URL, wait_until="networkidle")
-    print("Page loaded:", await page.title())
+    if change_park:
+        if not fresh_home:
+            print("Changing park; reloading search form")
+            await open_home(page)
+        await select_park(page, park_name)
+        await select_equipment(page, equipment)
+    else:
+        reloaded = await ensure_search_form(page)
+        if reloaded:
+            await select_park(page, park_name)
+            await select_equipment(page, equipment)
 
-    await select_park(page, park_name)
     await select_dates(page, arrival, departure)
-    await select_equipment(page, equipment)
     await search(page)
 
     areas = await find_available_areas(page)
@@ -280,13 +405,36 @@ async def main():
     results = []
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=HEADLESS,
-            slow_mo=0 if HEADLESS else 500,
-        )
-        page = await browser.new_page()
+        headless = HEADLESS
+        browser = await launch_browser(p, headless)
+        page = await new_page(browser)
 
+        try:
+            await open_home(page)
+        except Exception as exc:
+            if headless and "Blocked by site protection" in str(exc):
+                print("Headless browser was blocked; retrying with a visible window")
+                await browser.close()
+                headless = False
+                browser = await launch_browser(p, headless)
+                page = await new_page(browser)
+                try:
+                    await open_home(page)
+                except Exception as retry_exc:
+                    await browser.close()
+                    print(f"Could not load BC Parks: {retry_exc}")
+                    return
+            else:
+                await browser.close()
+                print(f"Could not load BC Parks: {exc}")
+                return
+
+        stop = False
+        fresh_home = True
         for park_name in PARKS:
+            if stop:
+                break
+            change_park = True
             for arrival, departure in date_ranges:
                 try:
                     areas = await run_search(
@@ -295,8 +443,13 @@ async def main():
                         arrival,
                         departure,
                         EQUIPMENT,
+                        change_park=change_park,
+                        fresh_home=fresh_home,
                     )
+                    change_park = False
+                    fresh_home = False
                 except Exception as exc:
+                    fresh_home = False
                     print(f"Search failed for {park_name} {arrival}→{departure}: {exc}")
                     results.append(
                         {
@@ -307,6 +460,10 @@ async def main():
                             "error": str(exc),
                         }
                     )
+                    if "Blocked by site protection" in str(exc):
+                        print("Stopping remaining searches.")
+                        stop = True
+                        break
                     continue
 
                 results.append(
