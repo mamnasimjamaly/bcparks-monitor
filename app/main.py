@@ -160,7 +160,7 @@ async def open_home(page: Page) -> None:
     try:
         await page.locator("#park-autocomplete-input").wait_for(
             state="visible",
-            timeout=45000,
+            timeout=15000,
         )
     except Exception:
         title = await page.title()
@@ -300,24 +300,22 @@ async def select_equipment(page: Page, equipment: str):
     print(f"Selecting equipment: {equipment}")
 
     await page.click("#equipment-field")
-    await page.wait_for_timeout(1000)
-
-    options = page.locator("mat-option")
-    count = await options.count()
-
-    print("Equipment options found:", count)
-
-    for i in range(count):
-        print(i, await options.nth(i).inner_text())
-
-    await page.get_by_text(equipment, exact=True).click()
+    option = page.get_by_role("option", name=equipment, exact=True)
+    await option.wait_for(state="visible", timeout=8000)
+    await option.click()
     print(f"Equipment selected: {equipment}")
 
 
 async def search(page: Page):
     print("Clicking search...")
     await page.click("#actionSearch")
-    await page.wait_for_timeout(10000)
+    try:
+        await page.locator(".leaflet-container").wait_for(
+            state="visible",
+            timeout=15000,
+        )
+    except Exception:
+        await page.wait_for_timeout(3000)
 
 
 async def find_available_areas(page: Page) -> list[str]:
@@ -343,9 +341,14 @@ async def find_available_areas(page: Page) -> list[str]:
     return areas
 
 
-def screenshot_name(park_name: str, arrival: str, departure: str) -> str:
+def screenshot_name(park_name: str, arrival: str, departure: str) -> Path:
     slug = re.sub(r"[^a-z0-9]+", "-", park_name.lower()).strip("-")
-    return f"result-{slug}-{arrival}-to-{departure}.png"
+    LOG_DIR.mkdir(exist_ok=True)
+    return LOG_DIR / f"result-{slug}-{arrival}-to-{departure}.png"
+
+
+def short_error(message: str) -> str:
+    return message.splitlines()[0]
 
 
 async def run_search(
@@ -450,7 +453,7 @@ async def main():
                     fresh_home = False
                 except Exception as exc:
                     fresh_home = False
-                    print(f"Search failed for {park_name} {arrival}→{departure}: {exc}")
+                    print(f"Search failed for {park_name} {arrival}→{departure}: {short_error(str(exc))}")
                     results.append(
                         {
                             "park": park_name,
@@ -511,7 +514,7 @@ async def main():
         for result in errors:
             print(
                 f"- {result['park']} ({result['arrival']} → {result['departure']}): "
-                f"{result['error']}"
+                f"{short_error(result['error'])}"
             )
 
 

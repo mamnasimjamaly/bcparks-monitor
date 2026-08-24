@@ -7,7 +7,7 @@ Checks [camping.bcparks.ca](https://camping.bcparks.ca/) for campsite availabili
 ```powershell
 python -m venv venv
 .\venv\Scripts\Activate.ps1
-pip install playwright python-dotenv python-telegram-bot
+pip install -r requirements.txt
 playwright install chromium
 ```
 
@@ -94,7 +94,7 @@ The task runs while you are logged in. If a run is still going, the next one is 
 
 Scheduled output: `logs/monitor.log`
 
-If the search form never appears, screenshots may be written to `logs/waf.png` or `logs/load-failed.png`.
+If the search form never appears, screenshots may be written to `logs/waf.png` or `logs/load-failed.png`. Manual (non-headless) runs also save a result screenshot per search in `logs/`.
 
 ## Troubleshooting
 
